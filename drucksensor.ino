@@ -1,6 +1,8 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <string.h>
+#include <EEPROM.h>
+#include <math.h>
 
 #define USE_PT100 false
 
@@ -74,6 +76,51 @@ const float PRESSURE_MAX_BAR = 25.0f;
 const float SHUNT_OHM = 120.0f;
 const float ADC_REF_V = 5.0f;
 
+// ===================== DRUCK-KALIBRIERUNG =====================
+const uint32_t CALIB_MAGIC = 0x4450434CUL; // "DPCL"
+
+struct CalibrationData {
+  uint32_t magic;
+  float offset;
+  float scale;
+  float spanRefBar;
+};
+
+float calibOffset = 0.0f;
+float calibScale = 1.0f;
+float calibSpanReferenceBar = 8.0f;
+float currentBarRaw = 0.0f;
+float calRawZeroBar = 0.0f;
+
+void loadCalibration() {
+  CalibrationData data;
+  EEPROM.get(0, data);
+
+  if (data.magic == CALIB_MAGIC &&
+      isfinite(data.offset) &&
+      isfinite(data.scale) &&
+      isfinite(data.spanRefBar) &&
+      data.scale > 0.0001f && data.scale < 100.0f &&
+      data.spanRefBar >= 0.1f && data.spanRefBar <= 25.0f) {
+    calibOffset = data.offset;
+    calibScale = data.scale;
+    calibSpanReferenceBar = data.spanRefBar;
+  } else {
+    calibOffset = 0.0f;
+    calibScale = 1.0f;
+    calibSpanReferenceBar = 8.0f;
+  }
+}
+
+void saveCalibration() {
+  CalibrationData data;
+  data.magic = CALIB_MAGIC;
+  data.offset = calibOffset;
+  data.scale = calibScale;
+  data.spanRefBar = calibSpanReferenceBar;
+  EEPROM.put(0, data);
+}
+
 // ===================== WARN/ALARM =====================
 bool pressureWarnActive = false;
 bool pressureAlarmActive = false;
@@ -110,7 +157,9 @@ enum UiMode {
   UI_EDIT_NAME,
   UI_EDIT_MAGNETS,
   UI_EDIT_WARN_PRESSURE,
-  UI_EDIT_ALARM_PRESSURE
+  UI_EDIT_ALARM_PRESSURE,
+  UI_CAL_ZERO,
+  UI_CAL_SPAN
 };
 
 UiMode uiMode = UI_VIEW;
@@ -124,6 +173,7 @@ const char* menuItems[] = {
   "Druckalarm",
   "Schnecke +",
   "Schnecke -",
+  "Druck kalib",
   "Zurueck"
 };
 
@@ -273,7 +323,12 @@ if (voltage < 0.4f) {
   if (bar < 0.0f) bar = 0.0f;
   if (bar > 25.0f) bar = 25.0f;
 
-  currentBar = bar;
+  currentBarRaw = bar;
+  currentBar = (bar * calibScale) + calibOffset;
+
+  if (currentBar < 0.0f) currentBar = 0.0f;
+  if (currentBar > PRESSURE_MAX_BAR) currentBar = PRESSURE_MAX_BAR;
+
   pressureStatus = PRESS_OK;
 }
 
@@ -521,6 +576,29 @@ void drawEditAlarmPressure() {
   printPaddedLine(1, line2);
 }
 
+void drawCalZero() {
+  lcd.noBlink();
+  lcd.clear();
+  printPaddedLine(0, "Kalib: 0 bar");
+
+  char line2[17];
+  snprintf(line2, sizeof(line2), "Ist:%4.1f bar", currentBar);
+  printPaddedLine(1, line2);
+}
+
+void drawCalSpan() {
+  lcd.noBlink();
+  lcd.clear();
+
+  char line1[17];
+  snprintf(line1, sizeof(line1), "Ref:%4.1f bar", calibSpanReferenceBar);
+  printPaddedLine(0, line1);
+
+  char line2[17];
+  snprintf(line2, sizeof(line2), "Ist:%4.1f bar", currentBar);
+  printPaddedLine(1, line2);
+}
+
 // ===================== SCHNECKENVERWALTUNG =====================
 void addScrew() {
   if (currentScrewCount < NUM_SCREWS) {
@@ -571,6 +649,8 @@ void setup() {
 
   lcd.init();
   lcd.backlight();
+
+  loadCalibration();
 
 #if USE_PT100
   thermo.begin(MAX31865_3WIRE);
@@ -737,6 +817,12 @@ void loop() {
           break;
 
         case 8:
+          uiMode = UI_CAL_ZERO;
+          encoderPos = 0;
+          drawCalZero();
+          break;
+
+        case 9:
         default:
           uiMode = UI_VIEW;
           encoderPos = 0;
@@ -868,6 +954,52 @@ void loop() {
     }
 
     if (buttonPressed()) {
+      uiMode = UI_MENU;
+      encoderPos = 0;
+      drawMenu();
+    }
+
+  } else if (uiMode == UI_CAL_ZERO) {
+
+    if (encoderPos >= 1) {
+      calibOffset += 0.05f;
+      encoderPos = 0;
+      drawCalZero();
+    } else if (encoderPos <= -1) {
+      calibOffset -= 0.05f;
+      encoderPos = 0;
+      drawCalZero();
+    }
+
+    if (buttonPressed()) {
+      calRawZeroBar = currentBarRaw;
+      uiMode = UI_CAL_SPAN;
+      encoderPos = 0;
+      drawCalSpan();
+    }
+
+  } else if (uiMode == UI_CAL_SPAN) {
+
+    if (encoderPos >= 1) {
+      calibSpanReferenceBar += 0.1f;
+      if (calibSpanReferenceBar > PRESSURE_MAX_BAR) calibSpanReferenceBar = PRESSURE_MAX_BAR;
+      encoderPos = 0;
+    } else if (encoderPos <= -1) {
+      calibSpanReferenceBar -= 0.1f;
+      if (calibSpanReferenceBar < 0.1f) calibSpanReferenceBar = 0.1f;
+      encoderPos = 0;
+    }
+
+    float rawSpanDiff = currentBarRaw - calRawZeroBar;
+    if (fabs(rawSpanDiff) > 0.05f) {
+      calibScale = calibSpanReferenceBar / rawSpanDiff;
+      calibOffset = -calRawZeroBar * calibScale;
+    }
+
+    drawCalSpan();
+
+    if (buttonPressed()) {
+      saveCalibration();
       uiMode = UI_MENU;
       encoderPos = 0;
       drawMenu();
