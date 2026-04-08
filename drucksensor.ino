@@ -578,24 +578,29 @@ void drawEditAlarmPressure() {
 
 void drawCalZero() {
   lcd.noBlink();
-  lcd.clear();
-  printPaddedLine(0, "Kalib: 0 bar");
+
+  char istBuf[6];
+  formatFloat(currentBar, 3, 1, istBuf, sizeof(istBuf));
+
+  printPaddedLine(0, "Kalibrierwert");
 
   char line2[17];
-  snprintf(line2, sizeof(line2), "Ist:%4.1f bar", currentBar);
+  snprintf(line2, sizeof(line2), "Soll 0.0 Ist %s", istBuf);
   printPaddedLine(1, line2);
 }
 
 void drawCalSpan() {
   lcd.noBlink();
-  lcd.clear();
 
-  char line1[17];
-  snprintf(line1, sizeof(line1), "Ref:%4.1f bar", calibSpanReferenceBar);
-  printPaddedLine(0, line1);
+  char refBuf[6];
+  char istBuf[6];
+  formatFloat(calibSpanReferenceBar, 3, 1, refBuf, sizeof(refBuf));
+  formatFloat(currentBar, 3, 1, istBuf, sizeof(istBuf));
+
+  printPaddedLine(0, "Kalibrierwert");
 
   char line2[17];
-  snprintf(line2, sizeof(line2), "Ist:%4.1f bar", currentBar);
+  snprintf(line2, sizeof(line2), "Ref %s Ist %s", refBuf, istBuf);
   printPaddedLine(1, line2);
 }
 
@@ -819,6 +824,7 @@ void loop() {
         case 8:
           uiMode = UI_CAL_ZERO;
           encoderPos = 0;
+          lcd.clear();
           drawCalZero();
           break;
 
@@ -971,10 +977,17 @@ void loop() {
       drawCalZero();
     }
 
+    static unsigned long lastCalZeroDisp = 0;
+    if (millis() - lastCalZeroDisp > 250) {
+      drawCalZero();
+      lastCalZeroDisp = millis();
+    }
+
     if (buttonPressed()) {
       calRawZeroBar = currentBarRaw;
       uiMode = UI_CAL_SPAN;
       encoderPos = 0;
+      lcd.clear();
       drawCalSpan();
     }
 
@@ -996,7 +1009,11 @@ void loop() {
       calibOffset = -calRawZeroBar * calibScale;
     }
 
-    drawCalSpan();
+    static unsigned long lastCalSpanDisp = 0;
+    if (millis() - lastCalSpanDisp > 250) {
+      drawCalSpan();
+      lastCalSpanDisp = millis();
+    }
 
     if (buttonPressed()) {
       saveCalibration();
