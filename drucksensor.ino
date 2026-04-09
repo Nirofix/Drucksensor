@@ -543,6 +543,25 @@ void setBacklightPulse(unsigned long cycleMs, unsigned long offMs) {
   else          lcd.backlight();
 }
 
+void updateBacklightState() {
+  if (uiMode != UI_VIEW) {
+    lcd.backlight();
+    return;
+  }
+
+  if (pressureAlarmActive && pressureStatus == PRESS_OK) {
+    setBacklightPulse(ALARM_BACKLIGHT_CYCLE_MS, ALARM_BACKLIGHT_OFF_MS);
+    return;
+  }
+
+  if (pressureWarnActive && pressureStatus == PRESS_OK) {
+    setBacklightPulse(WARN_BACKLIGHT_CYCLE_MS, WARN_BACKLIGHT_OFF_MS);
+    return;
+  }
+
+  lcd.backlight();
+}
+
 // ===================== ANZEIGE =====================
 void drawCompact() {
   int rpmInt = (int)(currentRPM + 0.5f);
@@ -556,11 +575,6 @@ void drawCompact() {
   intToRpmText(rpmInt, rpmText, sizeof(rpmText));
 
   char pressurePart[16];
-  if (pressureWarnActive && pressureStatus == PRESS_OK) {
-    setBacklightPulse(WARN_BACKLIGHT_CYCLE_MS, WARN_BACKLIGHT_OFF_MS);
-  } else {
-    lcd.backlight();
-  }
   makePressureText(pressurePart, sizeof(pressurePart));
 
   // rpm links, Druck rechts
@@ -803,13 +817,13 @@ void drawAlarmScreen() {
 
   snprintf(line2, sizeof(line2), "%s %s", pressureText, tempText);
   printPaddedLine(1, line2);
-  setBacklightPulse(ALARM_BACKLIGHT_CYCLE_MS, ALARM_BACKLIGHT_OFF_MS);
 }
 void loop() {
   measureRPM();
   measurePressure();
   measureTemp();
   updatePressureStates();
+  updateBacklightState();
   updateBuzzer();
   updateEncoder();
 
