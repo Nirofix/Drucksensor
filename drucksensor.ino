@@ -1,6 +1,8 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <string.h>
+#include <EEPROM.h>
+#include <math.h>
 
 #define USE_PT100 false
 
@@ -17,6 +19,7 @@ const int PIN_BUZZER      = 6;
 const int PIN_OPTO        = 7;
 
 const int PIN_PRESSURE    = A0;
+
 
 // ===================== DISPLAY =====================
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -74,6 +77,51 @@ const float PRESSURE_MAX_BAR = 25.0f;
 const float SHUNT_OHM = 120.0f;
 const float ADC_REF_V = 5.0f;
 
+// ===================== DRUCK-KALIBRIERUNG =====================
+const uint32_t CALIB_MAGIC = 0x4450434CUL; // "DPCL"
+
+struct CalibrationData {
+  uint32_t magic;
+  float offset;
+  float scale;
+  float spanRefBar;
+};
+
+float calibOffset = 0.0f;
+float calibScale = 1.0f;
+float calibSpanReferenceBar = 8.0f;
+float currentBarRaw = 0.0f;
+float calRawZeroBar = 0.0f;
+
+void loadCalibration() {
+  CalibrationData data;
+  EEPROM.get(0, data);
+
+  if (data.magic == CALIB_MAGIC &&
+      isfinite(data.offset) &&
+      isfinite(data.scale) &&
+      isfinite(data.spanRefBar) &&
+      data.scale > 0.0001f && data.scale < 100.0f &&
+      data.spanRefBar >= 0.1f && data.spanRefBar <= 25.0f) {
+    calibOffset = data.offset;
+    calibScale = data.scale;
+    calibSpanReferenceBar = data.spanRefBar;
+  } else {
+    calibOffset = 0.0f;
+    calibScale = 1.0f;
+    calibSpanReferenceBar = 8.0f;
+  }
+}
+
+void saveCalibration() {
+  CalibrationData data;
+  data.magic = CALIB_MAGIC;
+  data.offset = calibOffset;
+  data.scale = calibScale;
+  data.spanRefBar = calibSpanReferenceBar;
+  EEPROM.put(0, data);
+}
+
 // ===================== WARN/ALARM =====================
 bool pressureWarnActive = false;
 bool pressureAlarmActive = false;
@@ -110,7 +158,9 @@ enum UiMode {
   UI_EDIT_NAME,
   UI_EDIT_MAGNETS,
   UI_EDIT_WARN_PRESSURE,
-  UI_EDIT_ALARM_PRESSURE
+  UI_EDIT_ALARM_PRESSURE,
+  UI_CAL_ZERO,
+  UI_CAL_SPAN
 };
 
 UiMode uiMode = UI_VIEW;
@@ -124,6 +174,7 @@ const char* menuItems[] = {
   "Druckalarm",
   "Schnecke +",
   "Schnecke -",
+  "Druck kalib",
   "Zurueck"
 };
 
@@ -273,7 +324,12 @@ if (voltage < 0.4f) {
   if (bar < 0.0f) bar = 0.0f;
   if (bar > 25.0f) bar = 25.0f;
 
-  currentBar = bar;
+  currentBarRaw = bar;
+  currentBar = (bar * calibScale) + calibOffset;
+
+  if (currentBar < 0.0f) currentBar = 0.0f;
+  if (currentBar > PRESSURE_MAX_BAR) currentBar = PRESSURE_MAX_BAR;
+
   pressureStatus = PRESS_OK;
 }
 
@@ -373,25 +429,47 @@ void updatePressureStates() {
 }
 
 void updateBuzzer() {
-  static bool buzzPhase = false;
-  static unsigned long lastBuzz = 0;
+  static bool buzzOn = false;
+  static bool lastAlarmState = false;
+  static unsigned long phaseStartMs = 0;
 
-  if (pressureAlarmActive) {
-    if (millis() - lastBuzz > 300) {
-      lastBuzz = millis();
-      buzzPhase = !buzzPhase;
-      if (buzzPhase) {
-        tone(PIN_BUZZER, 2200, 180);
-      }
+  if (!pressureAlarmActive) {
+    noTone(PIN_BUZZER);
+    buzzOn = false;
+    lastAlarmState = false;
+    phaseStartMs = millis();
+    return;
+  }
+
+  unsigned long now = millis();
+  const unsigned long ON_MS = 200;
+  const unsigned long OFF_MS = 150;
+
+  if (!lastAlarmState) {
+    tone(PIN_BUZZER, 2000);
+    buzzOn = true;
+    lastAlarmState = true;
+    phaseStartMs = now;
+    return;
+  }
+
+  if (buzzOn) {
+    if (now - phaseStartMs >= ON_MS) {
+      noTone(PIN_BUZZER);
+      buzzOn = false;
+      phaseStartMs = now;
     }
   } else {
-    noTone(PIN_BUZZER);
+    if (now - phaseStartMs >= OFF_MS) {
+      tone(PIN_BUZZER, 2000);
+      buzzOn = true;
+      phaseStartMs = now;
+    }
   }
 }
 
 // ===================== ANZEIGE =====================
 void drawCompact() {
-    lcd.backlight();
   int rpmInt = (int)(currentRPM + 0.5f);
   float lpm = currentRPM * screws[currentScrew].litersPerRev;
 
@@ -403,7 +481,14 @@ void drawCompact() {
   intToRpmText(rpmInt, rpmText, sizeof(rpmText));
 
   char pressurePart[16];
-  bool blinkState = (millis() / 400) % 2;
+  bool blinkState = (millis() / 200) % 2;
+
+  if (pressureWarnActive && pressureStatus == PRESS_OK) {
+    if (blinkState) lcd.backlight();
+    else            lcd.noBacklight();
+  } else {
+    lcd.backlight();
+  }
 
   if (pressureWarnActive && blinkState && pressureStatus == PRESS_OK) {
     strcpy(pressurePart, "       ");
@@ -521,6 +606,34 @@ void drawEditAlarmPressure() {
   printPaddedLine(1, line2);
 }
 
+void drawCalZero() {
+  lcd.noBlink();
+
+  char istBuf[6];
+  formatFloat(currentBar, 3, 1, istBuf, sizeof(istBuf));
+
+  printPaddedLine(0, "Kalibrierwert");
+
+  char line2[17];
+  snprintf(line2, sizeof(line2), "Soll 0.0 Ist %s", istBuf);
+  printPaddedLine(1, line2);
+}
+
+void drawCalSpan() {
+  lcd.noBlink();
+
+  char refBuf[6];
+  char istBuf[6];
+  formatFloat(calibSpanReferenceBar, 3, 1, refBuf, sizeof(refBuf));
+  formatFloat(currentBar, 3, 1, istBuf, sizeof(istBuf));
+
+  printPaddedLine(0, "Kalibrierwert");
+
+  char line2[17];
+  snprintf(line2, sizeof(line2), "Ref %s Ist %s", refBuf, istBuf);
+  printPaddedLine(1, line2);
+}
+
 // ===================== SCHNECKENVERWALTUNG =====================
 void addScrew() {
   if (currentScrewCount < NUM_SCREWS) {
@@ -571,6 +684,8 @@ void setup() {
 
   lcd.init();
   lcd.backlight();
+
+  loadCalibration();
 
 #if USE_PT100
   thermo.begin(MAX31865_3WIRE);
@@ -665,7 +780,8 @@ void loop() {
     }
 
     static unsigned long lastDisp = 0;
-    if (millis() - lastDisp > 500) {
+    unsigned long dispInterval = pressureWarnActive ? 200UL : 500UL;
+    if (millis() - lastDisp > dispInterval) {
       drawCompact();
       lastDisp = millis();
     }
@@ -737,6 +853,13 @@ void loop() {
           break;
 
         case 8:
+          uiMode = UI_CAL_ZERO;
+          encoderPos = 0;
+          lcd.clear();
+          drawCalZero();
+          break;
+
+        case 9:
         default:
           uiMode = UI_VIEW;
           encoderPos = 0;
@@ -868,6 +991,63 @@ void loop() {
     }
 
     if (buttonPressed()) {
+      uiMode = UI_MENU;
+      encoderPos = 0;
+      drawMenu();
+    }
+
+  } else if (uiMode == UI_CAL_ZERO) {
+
+    if (encoderPos >= 1) {
+      calibOffset += 0.05f;
+      encoderPos = 0;
+      drawCalZero();
+    } else if (encoderPos <= -1) {
+      calibOffset -= 0.05f;
+      encoderPos = 0;
+      drawCalZero();
+    }
+
+    static unsigned long lastCalZeroDisp = 0;
+    if (millis() - lastCalZeroDisp > 250) {
+      drawCalZero();
+      lastCalZeroDisp = millis();
+    }
+
+    if (buttonPressed()) {
+      calRawZeroBar = currentBarRaw;
+      uiMode = UI_CAL_SPAN;
+      encoderPos = 0;
+      lcd.clear();
+      drawCalSpan();
+    }
+
+  } else if (uiMode == UI_CAL_SPAN) {
+
+    if (encoderPos >= 1) {
+      calibSpanReferenceBar += 0.1f;
+      if (calibSpanReferenceBar > PRESSURE_MAX_BAR) calibSpanReferenceBar = PRESSURE_MAX_BAR;
+      encoderPos = 0;
+    } else if (encoderPos <= -1) {
+      calibSpanReferenceBar -= 0.1f;
+      if (calibSpanReferenceBar < 0.1f) calibSpanReferenceBar = 0.1f;
+      encoderPos = 0;
+    }
+
+    float rawSpanDiff = currentBarRaw - calRawZeroBar;
+    if (fabs(rawSpanDiff) > 0.05f) {
+      calibScale = calibSpanReferenceBar / rawSpanDiff;
+      calibOffset = -calRawZeroBar * calibScale;
+    }
+
+    static unsigned long lastCalSpanDisp = 0;
+    if (millis() - lastCalSpanDisp > 250) {
+      drawCalSpan();
+      lastCalSpanDisp = millis();
+    }
+
+    if (buttonPressed()) {
+      saveCalibration();
       uiMode = UI_MENU;
       encoderPos = 0;
       drawMenu();
