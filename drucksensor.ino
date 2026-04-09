@@ -427,6 +427,22 @@ void updatePressureStates() {
   }
 }
 
+void buzzerOn() {
+#if BUZZER_ACTIVE
+  digitalWrite(PIN_BUZZER, HIGH);
+#else
+  tone(PIN_BUZZER, 2200);
+#endif
+}
+
+void buzzerOff() {
+#if BUZZER_ACTIVE
+  digitalWrite(PIN_BUZZER, LOW);
+#else
+  noTone(PIN_BUZZER);
+#endif
+}
+
 void updateBuzzer() {
   static bool lastAlarmState = false;
   static byte toneStep = 0;
