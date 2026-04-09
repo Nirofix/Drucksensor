@@ -361,15 +361,13 @@ void measureTemp() {
 // ===================== TEXTAUSGABE SENSORSTATUS =====================
 void makeTempText(char* out, size_t outSz) {
   if (tempStatus == TEMP_NO_MAX) {
-    strncpy(out, "NO-MAX", outSz);
-    out[outSz - 1] = '\0';
+    snprintf(out, outSz, "NO-%cC", 223);
   } else if (tempStatus == TEMP_SENSOR_ERR) {
     strncpy(out, "PT100ERR", outSz);
     out[outSz - 1] = '\0';
   } else {
-    char tempBuf[8];
-    formatFloat(currentTemp, 4, 1, tempBuf, sizeof(tempBuf));
-    snprintf(out, outSz, "%s%cC", tempBuf, 223);
+    int tempInt = (int)(currentTemp + (currentTemp >= 0.0f ? 0.5f : -0.5f));
+    snprintf(out, outSz, "%d%cC", tempInt, 223);
   }
 }
 void makePressureText(char* out, size_t outSz) {
@@ -492,7 +490,7 @@ void drawCompact() {
   intToRpmText(rpmInt, rpmText, sizeof(rpmText));
 
   char pressurePart[16];
-  bool blinkState = (millis() / 200) % 2;
+  bool blinkState = (millis() / 300) % 2;
 
   if (pressureWarnActive && pressureStatus == PRESS_OK) {
     if (blinkState) lcd.backlight();
@@ -746,16 +744,9 @@ void drawAlarmScreen() {
 
   snprintf(line2, sizeof(line2), "%s %s", pressureText, tempText);
   printPaddedLine(1, line2);
-  static unsigned long lastBlink = 0;
-static bool lightOn = true;
-
-if (millis() - lastBlink > (lightOn ? 700 : 300)) {
-  lastBlink = millis();
-  lightOn = !lightOn;
-}
-
-if (lightOn) lcd.backlight();
-else lcd.noBacklight();
+  bool blinkState = (millis() / 300) % 2;
+  if (blinkState) lcd.backlight();
+  else            lcd.noBacklight();
 
 }
 void loop() {
