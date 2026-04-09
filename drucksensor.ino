@@ -127,6 +127,10 @@ bool pressureWarnActive = false;
 bool pressureAlarmActive = false;
 
 const float PRESSURE_HYSTERESIS = 0.3f;
+const unsigned long WARN_BACKLIGHT_CYCLE_MS = 1000UL;
+const unsigned long WARN_BACKLIGHT_OFF_MS = 120UL;
+const unsigned long ALARM_BACKLIGHT_CYCLE_MS = 1300UL;
+const unsigned long ALARM_BACKLIGHT_OFF_MS = 140UL;
 
 // ===================== SCHNECKEN =====================
 struct ScrewProfile {
@@ -148,6 +152,58 @@ ScrewProfile screws[NUM_SCREWS] = {
 byte currentScrew = 0;
 byte currentScrewCount = 1;
 byte pendingScrew = 0;
+
+const uint32_t SETTINGS_MAGIC = 0x44505354UL; // "DPST"
+
+struct PersistentSettings {
+  uint32_t magic;
+  byte screwCount;
+  byte currentScrewIndex;
+  byte magnets;
+  ScrewProfile screwData[NUM_SCREWS];
+};
+
+const int SETTINGS_EEPROM_ADDR = 64;
+
+void loadSettings() {
+  PersistentSettings settings;
+  EEPROM.get(SETTINGS_EEPROM_ADDR, settings);
+
+  if (settings.magic != SETTINGS_MAGIC) return;
+  if (settings.screwCount < 1 || settings.screwCount > NUM_SCREWS) return;
+  if (settings.currentScrewIndex >= settings.screwCount) return;
+  if (settings.magnets < 1 || settings.magnets > 8) return;
+
+  for (byte i = 0; i < settings.screwCount; i++) {
+    settings.screwData[i].name[8] = '\0';
+    if (settings.screwData[i].warnPressureBar < 0.0f) settings.screwData[i].warnPressureBar = 0.0f;
+    if (settings.screwData[i].alarmPressureBar < settings.screwData[i].warnPressureBar) {
+      settings.screwData[i].alarmPressureBar = settings.screwData[i].warnPressureBar;
+    }
+    if (settings.screwData[i].alarmPressureBar > PRESSURE_MAX_BAR) settings.screwData[i].alarmPressureBar = PRESSURE_MAX_BAR;
+    screws[i] = settings.screwData[i];
+  }
+
+  currentScrewCount = settings.screwCount;
+  currentScrew = settings.currentScrewIndex;
+  pendingScrew = currentScrew;
+  magnetsPerRev = settings.magnets;
+}
+
+void saveSettings() {
+  PersistentSettings settings;
+  settings.magic = SETTINGS_MAGIC;
+  settings.screwCount = currentScrewCount;
+  settings.currentScrewIndex = currentScrew;
+  settings.magnets = magnetsPerRev;
+
+  for (byte i = 0; i < NUM_SCREWS; i++) {
+    settings.screwData[i] = screws[i];
+    settings.screwData[i].name[8] = '\0';
+  }
+
+  EEPROM.put(SETTINGS_EEPROM_ADDR, settings);
+}
 
 // ===================== UI =====================
 enum UiMode {
@@ -477,6 +533,16 @@ void updateBuzzer() {
   }
 }
 
+void setBacklightPulse(unsigned long cycleMs, unsigned long offMs) {
+  unsigned long phase = millis() % cycleMs;
+  bool offPhase = phase >= (cycleMs - offMs);
+
+  // Das verwendete I2C-Backlight ist nur EIN/AUS schaltbar.
+  // Falls später dimmbares Backlight verfügbar ist, hier PWM-Dimmung ergänzen.
+  if (offPhase) lcd.noBacklight();
+  else          lcd.backlight();
+}
+
 // ===================== ANZEIGE =====================
 void drawCompact() {
   int rpmInt = (int)(currentRPM + 0.5f);
@@ -490,20 +556,12 @@ void drawCompact() {
   intToRpmText(rpmInt, rpmText, sizeof(rpmText));
 
   char pressurePart[16];
-  bool blinkState = (millis() / 300) % 2;
-
   if (pressureWarnActive && pressureStatus == PRESS_OK) {
-    if (blinkState) lcd.backlight();
-    else            lcd.noBacklight();
+    setBacklightPulse(WARN_BACKLIGHT_CYCLE_MS, WARN_BACKLIGHT_OFF_MS);
   } else {
     lcd.backlight();
   }
-
-  if (pressureWarnActive && blinkState && pressureStatus == PRESS_OK) {
-    strcpy(pressurePart, "       ");
- } else {
   makePressureText(pressurePart, sizeof(pressurePart));
-}
 
   // rpm links, Druck rechts
   snprintf(line1, sizeof(line1), "%-6s%9s", rpmText, pressurePart);
@@ -695,6 +753,7 @@ void setup() {
   lcd.backlight();
 
   loadCalibration();
+  loadSettings();
 
 #if USE_PT100
   thermo.begin(MAX31865_3WIRE);
@@ -744,10 +803,7 @@ void drawAlarmScreen() {
 
   snprintf(line2, sizeof(line2), "%s %s", pressureText, tempText);
   printPaddedLine(1, line2);
-  bool blinkState = (millis() / 300) % 2;
-  if (blinkState) lcd.backlight();
-  else            lcd.noBacklight();
-
+  setBacklightPulse(ALARM_BACKLIGHT_CYCLE_MS, ALARM_BACKLIGHT_OFF_MS);
 }
 void loop() {
   measureRPM();
@@ -842,6 +898,7 @@ void loop() {
 
         case 6:
           addScrew();
+          saveSettings();
           uiMode = UI_SELECT_SCREW;
           encoderPos = 0;
           drawSelectScrew();
@@ -849,6 +906,7 @@ void loop() {
 
         case 7:
           deleteScrew(currentScrew);
+          saveSettings();
           uiMode = UI_VIEW;
           encoderPos = 0;
           drawCompact();
@@ -884,6 +942,7 @@ void loop() {
 
     if (buttonPressed()) {
       currentScrew = pendingScrew;
+      saveSettings();
       uiMode = UI_VIEW;
       encoderPos = 0;
       drawCompact();
@@ -909,6 +968,7 @@ void loop() {
     }
 
     if (buttonPressed()) {
+      saveSettings();
       uiMode = UI_MENU;
       encoderPos = 0;
       drawMenu();
@@ -933,6 +993,7 @@ void loop() {
       nameEditPos++;
       if (nameEditPos >= 8) {
         lcd.noBlink();
+        saveSettings();
         uiMode = UI_MENU;
         encoderPos = 0;
         drawMenu();
@@ -954,6 +1015,7 @@ void loop() {
     }
 
     if (buttonPressed()) {
+      saveSettings();
       uiMode = UI_MENU;
       encoderPos = 0;
       drawMenu();
@@ -974,6 +1036,7 @@ void loop() {
     }
 
     if (buttonPressed()) {
+      saveSettings();
       uiMode = UI_MENU;
       encoderPos = 0;
       drawMenu();
@@ -993,6 +1056,7 @@ void loop() {
     }
 
     if (buttonPressed()) {
+      saveSettings();
       uiMode = UI_MENU;
       encoderPos = 0;
       drawMenu();
