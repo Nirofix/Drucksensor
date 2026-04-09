@@ -127,10 +127,10 @@ bool pressureWarnActive = false;
 bool pressureAlarmActive = false;
 
 const float PRESSURE_HYSTERESIS = 0.3f;
-const unsigned long WARN_BACKLIGHT_CYCLE_MS = 1000UL;
-const unsigned long WARN_BACKLIGHT_OFF_MS = 120UL;
-const unsigned long ALARM_BACKLIGHT_CYCLE_MS = 1300UL;
-const unsigned long ALARM_BACKLIGHT_OFF_MS = 140UL;
+const unsigned long WARN_BACKLIGHT_CYCLE_MS = 1550UL;  // 1500ms an + 50ms aus
+const unsigned long WARN_BACKLIGHT_OFF_MS = 50UL;
+const unsigned long ALARM_BACKLIGHT_CYCLE_MS = 750UL;  // 700ms an + 50ms aus
+const unsigned long ALARM_BACKLIGHT_OFF_MS = 50UL;
 
 // ===================== SCHNECKEN =====================
 struct ScrewProfile {
