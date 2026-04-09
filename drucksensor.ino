@@ -20,6 +20,8 @@ const int PIN_OPTO        = 7;
 
 const int PIN_PRESSURE    = A0;
 
+#define BUZZER_ACTIVE true
+
 // ===================== DISPLAY =====================
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
@@ -427,20 +429,57 @@ void updatePressureStates() {
   }
 }
 
-void updateBuzzer() {
-  static bool buzzPhase = false;
-  static unsigned long lastBuzz = 0;
+void buzzerOn() {
+#if BUZZER_ACTIVE
+  digitalWrite(PIN_BUZZER, HIGH);
+#else
+  tone(PIN_BUZZER, 2200);
+#endif
+}
 
-  if (pressureAlarmActive) {
-    if (millis() - lastBuzz > 300) {
-      lastBuzz = millis();
-      buzzPhase = !buzzPhase;
-      if (buzzPhase) {
-        tone(PIN_BUZZER, 2200, 180);
-      }
+void buzzerOff() {
+#if BUZZER_ACTIVE
+  digitalWrite(PIN_BUZZER, LOW);
+#else
+  noTone(PIN_BUZZER);
+#endif
+}
+
+void updateBuzzer() {
+  static bool buzzOn = false;
+  static bool lastAlarmState = false;
+  static unsigned long phaseStartMs = 0;
+
+  if (!pressureAlarmActive) {
+    if (lastAlarmState) {
+      buzzerOff();
+      buzzOn = false;
     }
-  } else {
-    noTone(PIN_BUZZER);
+    lastAlarmState = false;
+    return;
+  }
+
+  // Alarm gerade aktiv geworden -> sofort mit Ton starten
+  if (!lastAlarmState) {
+    buzzOn = true;
+    phaseStartMs = millis();
+    buzzerOn();
+    lastAlarmState = true;
+    return;
+  }
+
+  unsigned long now = millis();
+  const unsigned long ON_MS = 220;
+  const unsigned long OFF_MS = 180;
+
+  if (buzzOn && (now - phaseStartMs >= ON_MS)) {
+    buzzOn = false;
+    phaseStartMs = now;
+    buzzerOff();
+  } else if (!buzzOn && (now - phaseStartMs >= OFF_MS)) {
+    buzzOn = true;
+    phaseStartMs = now;
+    buzzerOn();
   }
 }
 
