@@ -20,7 +20,6 @@ const int PIN_OPTO        = 7;
 
 const int PIN_PRESSURE    = A0;
 
-#define BUZZER_ACTIVE true
 
 // ===================== DISPLAY =====================
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -451,41 +450,42 @@ void updateBuzzer() {
   static unsigned long phaseStartMs = 0;
 
   if (!pressureAlarmActive) {
-    if (lastAlarmState) {
-      buzzerOff();
-      buzzOn = false;
-    }
+    noTone(PIN_BUZZER);
+    buzzOn = false;
     lastAlarmState = false;
-    return;
-  }
-
-  // Alarm gerade aktiv geworden -> sofort mit Ton starten
-  if (!lastAlarmState) {
-    buzzOn = true;
     phaseStartMs = millis();
-    buzzerOn();
-    lastAlarmState = true;
     return;
   }
 
   unsigned long now = millis();
-  const unsigned long ON_MS = 220;
-  const unsigned long OFF_MS = 180;
+  const unsigned long ON_MS = 200;
+  const unsigned long OFF_MS = 150;
 
-  if (buzzOn && (now - phaseStartMs >= ON_MS)) {
-    buzzOn = false;
-    phaseStartMs = now;
-    buzzerOff();
-  } else if (!buzzOn && (now - phaseStartMs >= OFF_MS)) {
+  if (!lastAlarmState) {
+    tone(PIN_BUZZER, 2000);
     buzzOn = true;
+    lastAlarmState = true;
     phaseStartMs = now;
-    buzzerOn();
+    return;
+  }
+
+  if (buzzOn) {
+    if (now - phaseStartMs >= ON_MS) {
+      noTone(PIN_BUZZER);
+      buzzOn = false;
+      phaseStartMs = now;
+    }
+  } else {
+    if (now - phaseStartMs >= OFF_MS) {
+      tone(PIN_BUZZER, 2000);
+      buzzOn = true;
+      phaseStartMs = now;
+    }
   }
 }
 
 // ===================== ANZEIGE =====================
 void drawCompact() {
-    lcd.backlight();
   int rpmInt = (int)(currentRPM + 0.5f);
   float lpm = currentRPM * screws[currentScrew].litersPerRev;
 
@@ -497,7 +497,14 @@ void drawCompact() {
   intToRpmText(rpmInt, rpmText, sizeof(rpmText));
 
   char pressurePart[16];
-  bool blinkState = (millis() / 400) % 2;
+  bool blinkState = (millis() / 200) % 2;
+
+  if (pressureWarnActive && pressureStatus == PRESS_OK) {
+    if (blinkState) lcd.backlight();
+    else            lcd.noBacklight();
+  } else {
+    lcd.backlight();
+  }
 
   if (pressureWarnActive && blinkState && pressureStatus == PRESS_OK) {
     strcpy(pressurePart, "       ");
@@ -789,7 +796,8 @@ void loop() {
     }
 
     static unsigned long lastDisp = 0;
-    if (millis() - lastDisp > 500) {
+    unsigned long dispInterval = pressureWarnActive ? 200UL : 500UL;
+    if (millis() - lastDisp > dispInterval) {
       drawCompact();
       lastDisp = millis();
     }
