@@ -361,8 +361,7 @@ void measureTemp() {
 // ===================== TEXTAUSGABE SENSORSTATUS =====================
 void makeTempText(char* out, size_t outSz) {
   if (tempStatus == TEMP_NO_MAX) {
-    strncpy(out, "NO-MAX", outSz);
-    out[outSz - 1] = '\0';
+    snprintf(out, outSz, "NO-%cC", 223);
   } else if (tempStatus == TEMP_SENSOR_ERR) {
     strncpy(out, "PT100ERR", outSz);
     out[outSz - 1] = '\0';
